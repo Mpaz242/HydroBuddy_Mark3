@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Arduino build output
+build/
+*.elf
+*.bin
+*.hex
+*.map
+
+# Arduino IDE
+*.bak
+.arduino15/
+
+# VS Code
+.vscode/
+
+# WiFi credentials – never commit
+secrets.h
