@@ -12,6 +12,8 @@
  *   - HomeSpan          (HomeKit framework)
  *   - Adafruit SSD1306
  *   - Adafruit GFX Library
+ *   - ArduinoJson
+ *   - HTTPClient        (built into ESP32 Arduino core)
  *
  * HomeKit pairing code: 472-53-618
  *   Enter this in the Apple Home app when adding the accessory.
@@ -25,7 +27,9 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include "secrets.h"   // defines WIFI_SSID and WIFI_PASSWORD (gitignored)
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include "secrets.h"   // defines WIFI_SSID, WIFI_PASSWORD, LOCATION_LAT/LON (gitignored)
 
 // ── Device identity ───────────────────────────────────────────────────────────
 #define OTA_HOSTNAME   "hydrobuddy-mark3"
@@ -34,7 +38,9 @@
 #define PAIRING_CODE   "47253618"        // HomeKit PIN: 472-53-618
 
 // ── Easy-adjust pump timing ───────────────────────────────────────────────────
-const int           PUMP_DURATION    = 60;    // seconds pump runs per HomeKit cycle
+#define TEMP_THRESHOLD_F     75     // °F – at or above this, use the longer duration
+#define PUMP_DURATION_NORMAL 60     // seconds per cycle on a cool day
+#define PUMP_DURATION_HOT    90     // seconds per cycle on a hot day
 const unsigned long REED_DEBOUNCE_MS = 5000;  // ms reed must stay HIGH to confirm empty
 
 // ── Pin definitions (Waveshare ESP32-S3-Nano) ────────────────────────────────
@@ -78,7 +84,13 @@ bool                hkWantsOn = false;   // tracks latest HomeKit On request
 // Display refresh (200 ms cadence keeps HomeSpan responsive)
 unsigned long lastDisplayMs = 0;
 
+time_t        lastPumpTime  = 0;   // Unix timestamp of last pump run; 0 = never
+float         todayHighF    = 0;   // today's forecast high °F; 0 = not yet fetched
+unsigned long lastWeatherMs = 0;   // millis() of last fetchWeather() call
+int           pumpDurSec    = PUMP_DURATION_NORMAL;  // set each time pump starts
+
 // ── Forward declarations ──────────────────────────────────────────────────────
+void fetchWeather();
 void startPump(bool manual);
 void stopPump();
 void handleButton(unsigned long now);
@@ -90,7 +102,7 @@ void drawWiFiBars(int x, int y);
 void drawOTAProgress(unsigned int progress, unsigned int total);
 
 // ── HomeKit Switch service ────────────────────────────────────────────────────
-// Switch On  → run pump for PUMP_DURATION seconds, then report Off automatically.
+// Switch On  → run pump for PUMP_DURATION_NORMAL or PUMP_DURATION_HOT seconds, then report Off.
 // Switch Off → stop pump immediately.
 struct WaterSwitch : Service::Switch {
 
@@ -173,6 +185,10 @@ void setup() {
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     drawOTAProgress(progress, total);
   });
+
+  // Sync wall-clock time via NTP; required for lastPumpTime display.
+  // POSIX string handles PST (UTC-8) / PDT (UTC-7) DST transitions automatically.
+  configTzTime("PST8PDT,M3.2.0,M11.1.0", "pool.ntp.org", "time.nist.gov");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,9 +203,9 @@ void loop() {
   // 2. Manual button – pump runs while button is held
   handleButton(now);
 
-  // 3. HomeKit cycle auto-stop after PUMP_DURATION seconds
+  // 3. HomeKit cycle auto-stop after pumpDurSec seconds
   if (pumpRunning && !pumpIsManual &&
-      (now - pumpStartMs >= (unsigned long)PUMP_DURATION * 1000UL)) {
+      (now - pumpStartMs >= (unsigned long)pumpDurSec * 1000UL)) {
     stopPump();
     hkWantsOn = false;
     if (hkOn) hkOn->setVal(false);   // push Off state back to HomeKit
@@ -201,7 +217,14 @@ void loop() {
     if (hkOn) hkOn->setVal(false);
   }
 
-  // 5. Refresh display at ~5 Hz
+  // 5. Refresh weather forecast every 6 hours; also fires once after WiFi first connects
+  if (WiFi.status() == WL_CONNECTED &&
+      (lastWeatherMs == 0 || now - lastWeatherMs >= 6UL * 3600UL * 1000UL)) {
+    lastWeatherMs = now;
+    fetchWeather();
+  }
+
+  // 6. Refresh display at ~5 Hz
   if (now - lastDisplayMs >= 200) {
     lastDisplayMs = now;
     updateDisplay();
@@ -217,7 +240,9 @@ void startPump(bool manual) {
   if (pumpBlockedUntilManual && !manual) return;
   pumpBlockedUntilManual = false;   // manual hold acknowledged; clear the block
 
+  pumpDurSec   = (todayHighF >= TEMP_THRESHOLD_F) ? PUMP_DURATION_HOT : PUMP_DURATION_NORMAL;
   pumpStartMs  = millis();
+  lastPumpTime = time(nullptr);
   pumpRunning  = true;
   pumpIsManual = manual;
   digitalWrite(PIN_PUMP, HIGH);
@@ -227,6 +252,29 @@ void stopPump() {
   digitalWrite(PIN_PUMP, LOW);
   pumpRunning  = false;
   pumpIsManual = false;
+}
+
+// ── Weather fetch (Open-Meteo, no API key required) ───────────────────────────
+void fetchWeather() {
+  char url[220];
+  snprintf(url, sizeof(url),
+    "http://api.open-meteo.com/v1/forecast"
+    "?latitude=%.4f&longitude=%.4f"
+    "&daily=temperature_2m_max&temperature_unit=fahrenheit"
+    "&timezone=America%%2FLos_Angeles&forecast_days=1",
+    (float)LOCATION_LAT, (float)LOCATION_LON);
+
+  HTTPClient http;
+  http.begin(url);
+  int code = http.GET();
+  if (code == HTTP_CODE_OK) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, http.getStream());
+    if (!err) {
+      todayHighF = doc["daily"]["temperature_2m_max"][0].as<float>();
+    }
+  }
+  http.end();
 }
 
 // ── Reed switch – 5-second sustained trigger ──────────────────────────────────
@@ -298,7 +346,7 @@ void updateDisplay() {
 // Row 0 (y= 0): HomeKit switch state             + WiFi signal bars (right)
 // Row 1 (y=16): Pump status + elapsed seconds
 // Row 2 (y=32): Reservoir / tank status
-// Row 3 (y=48): IP address (OTA target)
+// Row 3 (y=48): Last watered timestamp + today's high °F (omitted until fetched)
 void drawNormalScreen() {
   display.clearDisplay();
   display.setTextSize(1);
@@ -328,12 +376,26 @@ void drawNormalScreen() {
     display.print(reservoirEmpty ? "Tank: EMPTY" : "Tank: OK");
   }
 
-  // Row 3: IP address for OTA uploads
+  // Row 3: Last watered timestamp + today's high temp
+  // Format: "Last: 5/18 2:04p 70F"
   display.setCursor(0, 48);
-  if (WiFi.status() == WL_CONNECTED) {
-    display.print(WiFi.localIP().toString());
+  if (lastPumpTime == 0) {
+    display.print("Last: --");
   } else {
-    display.print("WiFi: connecting");
+    struct tm* t = localtime(&lastPumpTime);
+    char buf[24];   // worst case: "Last: 12/31 12:59p 100F" = 23 + null
+    int hour = t->tm_hour;
+    const char* ampm = (hour >= 12) ? "p" : "a";
+    if (hour == 0) hour = 12;
+    else if (hour > 12) hour -= 12;
+    if (todayHighF > 0) {
+      snprintf(buf, sizeof(buf), "Last: %d/%d %d:%02d%s %dF",
+        t->tm_mon + 1, t->tm_mday, hour, t->tm_min, ampm, (int)roundf(todayHighF));
+    } else {
+      snprintf(buf, sizeof(buf), "Last: %d/%d %d:%02d%s",
+        t->tm_mon + 1, t->tm_mday, hour, t->tm_min, ampm);
+    }
+    display.print(buf);
   }
 
   display.display();
