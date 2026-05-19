@@ -345,8 +345,8 @@ void updateDisplay() {
 // ── Screen: Normal operation ──────────────────────────────────────────────────
 // Row 0 (y= 0): HomeKit switch state             + WiFi signal bars (right)
 // Row 1 (y=16): Pump status + elapsed seconds
-// Row 2 (y=32): Reservoir / tank status
-// Row 3 (y=48): Last watered timestamp + today's high °F (omitted until fetched)
+// Row 2 (y=32): Today's forecast high temp + pump duration
+// Row 3 (y=48): Last watered timestamp
 void drawNormalScreen() {
   display.clearDisplay();
   display.setTextSize(1);
@@ -368,33 +368,30 @@ void drawNormalScreen() {
     display.print("Pump: Idle");
   }
 
-  // Row 2: Tank status
+  // Row 2: Today's forecast high + pump duration
   display.setCursor(0, 32);
-  if (pumpBlockedUntilManual && !reservoirEmpty) {
-    display.print("Tank: Blocked");   // refilled but needs manual hold
+  char dayBuf[24];   // worst case: "Day High: 100F (90s)" = 20 + null
+  if (todayHighF > 0) {
+    snprintf(dayBuf, sizeof(dayBuf), "Day High: %dF (%ds)", (int)roundf(todayHighF), pumpDurSec);
   } else {
-    display.print(reservoirEmpty ? "Tank: EMPTY" : "Tank: OK");
+    snprintf(dayBuf, sizeof(dayBuf), "Day High: -- (%ds)", pumpDurSec);
   }
+  display.print(dayBuf);
 
-  // Row 3: Last watered timestamp + today's high temp
-  // Format: "Last: 5/18 2:04p 70F"
+  // Row 3: Last watered timestamp
+  // Format: "Last: 5/18 2:09p"
   display.setCursor(0, 48);
   if (lastPumpTime == 0) {
     display.print("Last: --");
   } else {
     struct tm* t = localtime(&lastPumpTime);
-    char buf[24];   // worst case: "Last: 12/31 12:59p 100F" = 23 + null
+    char buf[20];   // worst case: "Last: 12/31 12:59p" = 18 + null
     int hour = t->tm_hour;
     const char* ampm = (hour >= 12) ? "p" : "a";
     if (hour == 0) hour = 12;
     else if (hour > 12) hour -= 12;
-    if (todayHighF > 0) {
-      snprintf(buf, sizeof(buf), "Last: %d/%d %d:%02d%s %dF",
-        t->tm_mon + 1, t->tm_mday, hour, t->tm_min, ampm, (int)roundf(todayHighF));
-    } else {
-      snprintf(buf, sizeof(buf), "Last: %d/%d %d:%02d%s",
-        t->tm_mon + 1, t->tm_mday, hour, t->tm_min, ampm);
-    }
+    snprintf(buf, sizeof(buf), "Last: %d/%d %d:%02d%s",
+      t->tm_mon + 1, t->tm_mday, hour, t->tm_min, ampm);
     display.print(buf);
   }
 
