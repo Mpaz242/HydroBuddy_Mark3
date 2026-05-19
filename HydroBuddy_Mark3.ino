@@ -220,7 +220,6 @@ void loop() {
   // 5. Refresh weather forecast every 6 hours; also fires once after WiFi first connects
   if (WiFi.status() == WL_CONNECTED &&
       (lastWeatherMs == 0 || now - lastWeatherMs >= 6UL * 3600UL * 1000UL)) {
-    lastWeatherMs = now;
     fetchWeather();
   }
 
@@ -269,9 +268,10 @@ void fetchWeather() {
   int code = http.GET();
   if (code == HTTP_CODE_OK) {
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, http.getStream());
+    DeserializationError err = deserializeJson(doc, http.getString());
     if (!err) {
-      todayHighF = doc["daily"]["temperature_2m_max"][0].as<float>();
+      todayHighF    = doc["daily"]["temperature_2m_max"][0].as<float>();
+      lastWeatherMs = millis();
     }
   }
   http.end();
