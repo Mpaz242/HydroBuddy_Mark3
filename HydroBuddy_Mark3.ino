@@ -40,7 +40,7 @@
 // ── Easy-adjust pump timing ───────────────────────────────────────────────────
 #define TEMP_THRESHOLD_F     75     // °F – at or above this, use the longer duration
 #define PUMP_DURATION_NORMAL 60     // seconds per cycle on a cool day
-#define PUMP_DURATION_HOT    90     // seconds per cycle on a hot day
+#define PUMP_DURATION_HOT    100    // seconds per cycle on a hot day
 const unsigned long REED_DEBOUNCE_MS = 5000;  // ms reed must stay HIGH to confirm empty
 
 // ── Pin definitions (Waveshare ESP32-S3-Nano) ────────────────────────────────
