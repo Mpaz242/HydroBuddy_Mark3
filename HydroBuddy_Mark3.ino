@@ -233,6 +233,7 @@ void loop() {
 // ── Pump control ──────────────────────────────────────────────────────────────
 void startPump(bool manual) {
   if (reservoirEmpty) return;   // hard block: no pump without water
+  if (!manual && todayHighF == 0) return;   // weather not yet fetched; loop() will push Off back to HomeKit
 
   // Option A: after a mid-cycle reed interruption, only a manual hold can resume.
   // This persists across reservoir refills so the user must be physically present.
